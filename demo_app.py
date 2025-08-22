@@ -21,8 +21,7 @@ st.set_page_config(
 
 cookies = EncryptedCookieManager(
     prefix="satellite_game",
-    password=st.secrets["cookie_password"],  # デプロイ時は secrets で管理
-    max_age_days=30
+    password=st.secrets["cookie_password"]  # デプロイ時は secrets で管理
 )
 
 if not cookies.ready():
