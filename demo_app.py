@@ -1,4 +1,6 @@
 import streamlit as st
+from streamlit_cookies_manager import EncryptedCookieManager
+import uuid
 import requests
 import random
 import json
@@ -11,21 +13,60 @@ st.set_page_config(
     layout="wide"   # <- ここで全幅レイアウトに変更
 )
 
-# セッションステート（図鑑保持用）
-if "pokedex" not in st.session_state:
-    st.session_state.pokedex = []
+# # セッションステート（図鑑保持用）
+# if "pokedex" not in st.session_state:
+#     st.session_state.pokedex = []
+
+# --- ユーザーデータの管理 ---
+
+cookies = EncryptedCookieManager(
+    prefix="satellite_game",
+    password=st.secrets["cookie_password"],  # デプロイ時は secrets で管理
+    max_age_days=30
+)
+
+if not cookies.ready():
+    st.stop()
+
+# すでにcookieがあるか確認
+if "user_id" in cookies:
+    user_id = cookies["user_id"]
+else:
+    user_id = str(uuid.uuid4())  # 新規ユーザーならUUID発行
+    cookies["user_id"] = user_id
+    # cookies.save()
+
+# session_stateにcookieデータを保存
+if user_id not in st.session_state:
+    st.session_state[user_id] = cookies["user_id"]
+
+# cookieにゲームデータがあるか確認
+if "game_data" not in cookies:
+    init_data = {
+        "lives": 5,
+        "last_recharge": datetime.now().isoformat(),
+        "history": []
+    }
+    cookies["game_data"] = json.dumps(init_data)
+    # cookies.save()
+
+# session_stateにcookie上のゲームデータを保存
+if "game_data" not in st.session_state:
+    st.session_state["game_data"] = json.loads(cookies["game_data"])
+    print(st.session_state["game_data"] )
 
 # ----------------------
 # 状態量初期化
 # ----------------------
 API_KEY = st.secrets["N2YO_API_KEY"]
 MAX_LIVES = 5
+HISTORY_MAX_SIZE = 10
 RECOVER_INTERVAL = timedelta(hours=1)
 
 if "lives" not in st.session_state:
-    st.session_state["lives"] = 5  # 最大ライフ5
+    st.session_state["lives"] = st.session_state["game_data"]["lives"]  # 最大ライフ5
 if "last_recharge" not in st.session_state:
-    st.session_state["last_recharge"] = datetime.now()
+    st.session_state["last_recharge"] = datetime.fromisoformat(st.session_state["game_data"]["last_recharge"])
 if "position_data" not in st.session_state:
     st.session_state["position_data"] = "ー"  # 位置データを管理
 if "link_data" not in st.session_state:
@@ -43,7 +84,15 @@ if "link_flag" not in st.session_state:
 if "track_flag" not in st.session_state:
     st.session_state["track_flag"] = False
 if "history" not in st.session_state:
-    st.session_state["history"] = []
+    st.session_state["history"] = st.session_state["game_data"]["history"]
+
+# --- history ---のサイズ調整
+if len(st.session_state["history"]) > HISTORY_MAX_SIZE:
+    dist_size = len(st.session_state["history"]) - HISTORY_MAX_SIZE
+    for i in range(HISTORY_MAX_SIZE):
+        st.session_state["history"][i] = st.session_state["history"][i+dist_size]
+    for i in range(dist_size):
+        st.session_state["history"].pop(-1)
 
 # --- タイトル ---
 st.title("衛星トラックゲーム デモ")
@@ -65,6 +114,12 @@ else:
     minutes, seconds = divmod(int(remaining.total_seconds()), 60)
 life_placeholder = st.subheader(f"残りライフ❤️ : {st.session_state['lives']}/{MAX_LIVES} ({str(minutes).zfill(2)}:{str(seconds).zfill(2)})")
 
+# --- cookieへの保存 ---
+st.session_state["game_data"]["lives"] = st.session_state["lives"]
+st.session_state["game_data"]["last_recharge"] = st.session_state["last_recharge"].isoformat()
+st.session_state["game_data"]["history"] = st.session_state["history"]
+cookies["game_data"] = json.dumps(st.session_state["game_data"])
+cookies.save()
 
 # --- 表示の左右分割 ---
 col_left, col_center, col_right = st.columns([4, 1, 4])  # 左:操作, 右:結果
@@ -291,7 +346,7 @@ with col_left:
                     st.write(f"トラックスコア: {total_track_score} 点")
                     st.write(f"トータルスコア: {total_score} 点")
                     # 履歴へ残す
-                    date_history = datetime.now()
+                    date_history = datetime.now().isoformat()
                     score_history = f"リンクスコア: {st.session_state['score_link']}\t\tトラックスコア: {st.session_state['score_track']}\t\tトータルスコア: {st.session_state['score_total']}"
                     st.session_state["history"].append((date_history, score_history))
 
