@@ -17,42 +17,58 @@ st.set_page_config(
 # if "pokedex" not in st.session_state:
 #     st.session_state.pokedex = []
 
-# --- ユーザーデータの管理 ---
-
+# --- Cookie マネージャの準備 ---
 cookies = EncryptedCookieManager(
     prefix="satellite_game",
-    password=st.secrets["cookie_password"]  # デプロイ時は secrets で管理
+    password=st.secrets["cookie_password"] # デプロイ時は secrets で管理
 )
 
 if not cookies.ready():
     st.stop()
 
-# すでにcookieがあるか確認
+# --- Cookieのセーブフラグ管理 ---
+cookie_save_needed_flag = False
+def save_game_data_to_cookie():
+    global cookie_save_needed_flag
+    st.session_state["game_data"]["lives"] = st.session_state["lives"]
+    st.session_state["game_data"]["last_recharge"] = st.session_state["last_recharge"].isoformat()
+    st.session_state["game_data"]["history"] = st.session_state["history"]
+    cookies["game_data"] = json.dumps(st.session_state["game_data"])
+    cookie_save_needed_flag = True
+
+# --- ユーザーID管理 ---
+
 if "user_id" in cookies:
     user_id = cookies["user_id"]
 else:
     user_id = str(uuid.uuid4())  # 新規ユーザーならUUID発行
     cookies["user_id"] = user_id
-    # cookies.save()
+    cookie_save_needed_flag = True
 
 # session_stateにcookieデータを保存
 if user_id not in st.session_state:
     st.session_state[user_id] = cookies["user_id"]
+    cookie_save_needed_flag = True
 
-# cookieにゲームデータがあるか確認
-if "game_data" not in cookies:
-    init_data = {
+# --- データ初期化 or 復元 ---
+def init_game_data():
+    return {
         "lives": 5,
         "last_recharge": datetime.now().isoformat(),
         "history": []
     }
-    cookies["game_data"] = json.dumps(init_data)
-    # cookies.save()
 
-# session_stateにcookie上のゲームデータを保存
+# cookieにゲームデータがあるか確認
 if "game_data" not in st.session_state:
-    st.session_state["game_data"] = json.loads(cookies["game_data"])
-    print(st.session_state["game_data"] )
+    if "game_data" in cookies:
+        try:
+            st.session_state["game_data"] = json.loads(cookies["game_data"])
+        except Exception:
+            st.session_state["game_data"] = init_game_data()
+    else:
+        st.session_state["game_data"] = init_game_data()
+        cookies["game_data"] = json.dumps(st.session_state["game_data"])
+        cookie_save_needed_flag = True
 
 # ----------------------
 # 状態量初期化
@@ -87,11 +103,7 @@ if "history" not in st.session_state:
 
 # --- history ---のサイズ調整
 if len(st.session_state["history"]) > HISTORY_MAX_SIZE:
-    dist_size = len(st.session_state["history"]) - HISTORY_MAX_SIZE
-    for i in range(HISTORY_MAX_SIZE):
-        st.session_state["history"][i] = st.session_state["history"][i+dist_size]
-    for i in range(dist_size):
-        st.session_state["history"].pop(-1)
+    st.session_state["history"] = st.session_state["history"][-HISTORY_MAX_SIZE:]
 
 # --- タイトル ---
 st.title("衛星トラックゲーム デモ")
@@ -104,6 +116,7 @@ recovered = elapsed // RECOVER_INTERVAL  # 1時間ごとに1回復
 if recovered > 0:
     st.session_state["lives"] = min(MAX_LIVES, st.session_state["lives"] + recovered)
     st.session_state["last_recharge"] = st.session_state["last_recharge"] + RECOVER_INTERVAL * recovered
+    save_game_data_to_cookie()
 
 if st.session_state["lives"] == 5:
     minutes, seconds = 0, 0
@@ -112,13 +125,6 @@ else:
     remaining = next_recover - now
     minutes, seconds = divmod(int(remaining.total_seconds()), 60)
 life_placeholder = st.subheader(f"残りライフ❤️ : {st.session_state['lives']}/{MAX_LIVES} ({str(minutes).zfill(2)}:{str(seconds).zfill(2)})")
-
-# --- cookieへの保存 ---
-st.session_state["game_data"]["lives"] = st.session_state["lives"]
-st.session_state["game_data"]["last_recharge"] = st.session_state["last_recharge"].isoformat()
-st.session_state["game_data"]["history"] = st.session_state["history"]
-cookies["game_data"] = json.dumps(st.session_state["game_data"])
-cookies.save()
 
 # --- 表示の左右分割 ---
 col_left, col_center, col_right = st.columns([4, 1, 4])  # 左:操作, 右:結果
@@ -189,16 +195,17 @@ with col_left:
                     sat_list = data.get("above", [])
                     st.session_state["sat_list"] = sat_list
                     st.session_state["lives"] -= 1
+                    save_game_data_to_cookie()
                     st.session_state["track_flag"] = False
                     st.session_state["link_flag"] = True
                     if st.session_state["lives"] == 4:
                         st.session_state["last_recharge"] = datetime.now()
-                    st.success(f"{len(sat_list)} 個の衛星とリンクしました！")
+                    st.success(f"{len(st.session_state['sat_list'])} 個の衛星とリンクしました！")
 
-                    if len(sat_list) <= 20:
-                        sat_index_list = [int(x) for x in range(len(sat_list))]
+                    if len(st.session_state["sat_list"]) <= 20:
+                        sat_index_list = [int(x) for x in range(len(st.session_state["sat_list"]))]
                     else:
-                        sat_index_list = random.sample(range(len(sat_list)), k=20)
+                        sat_index_list = random.sample(range(len(st.session_state["sat_list"])), k=20)
                     sat_index_list.sort()
                     st.session_state["sat_random_index_list"] = sat_index_list
 
@@ -246,10 +253,10 @@ with col_left:
         # トラック選択
         # =======================
         if not "sat_random_index_list" in st.session_state:
-            if len(sat_list) <= 20:
-                sat_index_list = [int(x) for x in range(len(sat_list))]
+            if len(st.session_state["sat_list"]) <= 20:
+                sat_index_list = [int(x) for x in range(len(st.session_state["sat_list"]))]
             else:
-                sat_index_list = random.sample(range(len(sat_list)), k=20)
+                sat_index_list = random.sample(range(len(st.session_state["sat_list"])), k=20)
             sat_index_list.sort()
             st.session_state["sat_random_index_list"] = sat_index_list
         else:
@@ -347,13 +354,10 @@ with col_left:
                     # 履歴へ残す
                     date_history = datetime.now().isoformat()
                     score_history = f"リンクスコア: {st.session_state['score_link']}\t\tトラックスコア: {st.session_state['score_track']}\t\tトータルスコア: {st.session_state['score_total']}"
-                    st.session_state["history"].append((date_history, score_history))
-
-                    # クールタイム開始
-                    st.session_state["last_play_time"] = time.time()
+                    st.session_state["history"].append([date_history, score_history])
+                    save_game_data_to_cookie()
                 else:
                     st.error("APIエラー: 衛星位置を取得できませんでした。")
-
 
 with col_left:
     if st.button("もう一回プレイする"):
@@ -369,6 +373,11 @@ with col_left:
         track_placeholder.write("ー") #トラックデータの表示領域
         score_placeholder.write("ー") #スコアの表示領域
         # additional_placeholder.write("-") #追加データの表示領域
+        save_game_data_to_cookie()
+
+# --- cookieの保存 ---
+if cookie_save_needed_flag == True:
+    cookies.save()
 
 # # --- キャッチボタン ---
 # if st.button("キャッチ！"):
